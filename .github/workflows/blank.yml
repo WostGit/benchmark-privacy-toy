@@ -47,6 +47,7 @@ jobs:
           import os
           import mlx.core as mx
           import mlx.nn as nn
+          from mlx.utils import tree_flatten  # Fixed import location
 
           class TinyBlock(nn.Module):
               def __init__(self, d_model=32, n_heads=2):
@@ -86,7 +87,7 @@ jobs:
           mx.eval(model.parameters())
 
           os.makedirs("tiny_model", exist_ok=True)
-          weights = dict(mx.tree_flatten(model.parameters()))
+          weights = dict(tree_flatten(model.parameters())) # Using the fixed imported function
           mx.save_safetensors("tiny_model/model.safetensors", weights)
 
           with open("tiny_model/config.json", "w") as f:
@@ -95,10 +96,10 @@ jobs:
                   "d_model": 32,
                   "n_layers": 2,
                   "n_heads": 2,
-                  "model_type": "tiny_transformer"  # for potential future mlx_lm compatibility
+                  "model_type": "tiny_transformer"
               }, f, indent=2)
 
-          total_params = sum(p.size for _, p in mx.tree_flatten(model.parameters()))
+          total_params = sum(p.size for _, p in tree_flatten(model.parameters()))
           print(f"Created ultra-tiny Transformer")
           print(f"Total parameters: {total_params / 1e6:.2f}M")
           EOF
@@ -121,7 +122,7 @@ jobs:
           # Simple way: load parameters and quantize quantizable layers
           quantized_weights = {}
           for k, v in weights.items():
-              if any(x in k for x in ["weight", "embed", "linear"]):  # quantize linear/embedding weights
+              if any(x in k for x in ["weight", "embed", "linear"]):
                   quantized = mx.quantize(v, group_size=32, bits=4)
                   quantized_weights[k] = quantized
               else:
@@ -219,7 +220,6 @@ jobs:
           print(f"Peak memory usage (MB): {mx.metal.get_peak_memory() / (1024 * 1024):.1f}")
           print(f"Time elapsed: {elapsed:.2f}s")
 
-          # Privacy / feasibility note
           print("\nHybrid privacy demo (Proactive DP + selective GL/CKKS on QKV/FFN):")
           print("Overhead expected <2x on M1-class hardware.")
           print("This ultra-tiny model (~1.2M params) shows practical limits on GitHub M1 runner.")
