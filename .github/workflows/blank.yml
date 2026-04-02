@@ -28,9 +28,9 @@ jobs:
             ~/mlx_env
             ./tiny_model
             ./tiny_model_4bit
-          key: mlx-m1-toy-privacy-${{ hashFiles('requirements.txt', 'create_tiny_model.py', 'benchmark.py') }}
+          key: mlx-m1-toy-privacy-v3-${{ hashFiles('requirements.txt', 'create_tiny_model.py', 'benchmark.py') }}
           restore-keys: |
-            mlx-m1-toy-privacy-
+            mlx-m1-toy-privacy-v3-
 
       - name: Install MLX and dependencies
         run: |
@@ -49,68 +49,7 @@ jobs:
           import mlx.nn as nn
           from mlx.utils import tree_flatten
 
-          class TinyBlock(nn.Module):
-              def __init__(self, d_model=256, n_heads=4): # Scaled dimensions
-                  super().__init__()
-                  self.attn = nn.MultiHeadAttention(d_model, n_heads, bias=False)
-                  self.ffn = nn.Sequential(
-                      nn.Linear(d_model, 512, bias=False), # Scaled dimensions
-                      nn.GELU(),
-                      nn.Linear(512, d_model, bias=False)
-                  )
-                  self.norm1 = nn.LayerNorm(d_model)
-                  self.norm2 = nn.LayerNorm(d_model)
-
-              def __call__(self, x):
-                  attn_out = self.attn(self.norm1(x), self.norm1(x), self.norm1(x))
-                  x = x + attn_out
-                  x = x + self.ffn(self.norm2(x))
-                  return x
-
-          class TinyTransformer(nn.Module):
-              def __init__(self, vocab_size=512, d_model=256, n_layers=4): # Scaled layers
-                  super().__init__()
-                  self.embed = nn.Embedding(vocab_size, d_model)
-                  self.blocks = [TinyBlock(d_model) for _ in range(n_layers)]
-                  self.norm = nn.LayerNorm(d_model)
-                  self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
-
-              def __call__(self, x):
-                  x = self.embed(x)
-                  for block in self.blocks:
-                      x = block(x)
-                  x = self.norm(x)
-                  return self.lm_head(x)
-
-          # Instantiate and save
-          model = TinyTransformer()
-          mx.eval(model.parameters())
-
-          os.makedirs("tiny_model", exist_ok=True)
-          model.save_weights("tiny_model/model.safetensors")
-
-          with open("tiny_model/config.json", "w") as f:
-              json.dump({
-                  "vocab_size": 512,
-                  "d_model": 256,
-                  "n_layers": 4,
-                  "n_heads": 4,
-                  "model_type": "tiny_transformer"
-              }, f, indent=2)
-
-          total_params = sum(p.size for _, p in tree_flatten(model.parameters()))
-          print(f"Created ultra-tiny Transformer")
-          print(f"Total parameters: {total_params / 1e6:.2f}M")
-          EOF
-          python create_tiny_model.py
-
-      - name: Quantize to 4-bit (manual, reliable for custom model)
-        run: |
-          source mlx_env/bin/activate
-          cat > quantize_tiny.py << 'EOF'
-          import mlx.core as mx
-          import mlx.nn as nn
-          import os
+          print("\n=== STEP 1: MODEL CREATION INITIALIZED ===")
 
           class TinyBlock(nn.Module):
               def __init__(self, d_model=256, n_heads=4):
@@ -145,20 +84,85 @@ jobs:
                   x = self.norm(x)
                   return self.lm_head(x)
 
-          print("Loading tiny model for 4-bit quantization...")
           model = TinyTransformer()
-          model.load_weights("tiny_model/model.safetensors")
+          mx.eval(model.parameters())
 
+          print("\n[INPUT/OUTPUT] Analyzing Generated Weights In-Memory:")
+          weights_dict = dict(tree_flatten(model.parameters()))
+          for k, v in list(weights_dict.items())[:5]: # Truncated for readability
+              print(f"  -> Key: {k} | Shape: {v.shape} | Dtype: {v.dtype}")
+          print(f"  -> ... total parameters logged: {len(weights_dict)} dictionary keys.")
+
+          total_params = sum(p.size for _, p in tree_flatten(model.parameters()))
+          print(f"\n[METRICS] Total loaded parameters: {total_params / 1e6:.4f}M")
+
+          os.makedirs("tiny_model", exist_ok=True)
+          model.save_weights("tiny_model/model.safetensors")
+          print("[STORAGE] Successfully saved native weights to 'tiny_model/model.safetensors'")
+
+          with open("tiny_model/config.json", "w") as f:
+              config = {
+                  "vocab_size": 512, "d_model": 256, "n_layers": 4, "n_heads": 4, "model_type": "tiny_transformer"
+              }
+              json.dump(config, f, indent=2)
+              print(f"[STORAGE] Wrote model config.json: {config}")
+          EOF
+          python create_tiny_model.py
+
+      - name: Quantize to 4-bit (manual, reliable for custom model)
+        run: |
+          source mlx_env/bin/activate
+          cat > quantize_tiny.py << 'EOF'
+          import mlx.core as mx
+          import mlx.nn as nn
+          import os
+          from mlx.utils import tree_flatten
+
+          print("\n=== STEP 2: QUANTIZATION INITIALIZED ===")
+
+          class TinyBlock(nn.Module):
+              def __init__(self, d_model=256, n_heads=4):
+                  super().__init__()
+                  self.attn = nn.MultiHeadAttention(d_model, n_heads, bias=False)
+                  self.ffn = nn.Sequential(
+                      nn.Linear(d_model, 512, bias=False),
+                      nn.GELU(),
+                      nn.Linear(512, d_model, bias=False)
+                  )
+                  self.norm1 = nn.LayerNorm(d_model)
+                  self.norm2 = nn.LayerNorm(d_model)
+
+          class TinyTransformer(nn.Module):
+              def __init__(self, vocab_size=512, d_model=256, n_layers=4):
+                  super().__init__()
+                  self.embed = nn.Embedding(vocab_size, d_model)
+                  self.blocks = [TinyBlock(d_model) for _ in range(n_layers)]
+                  self.norm = nn.LayerNorm(d_model)
+                  self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+
+          model = TinyTransformer()
+          print("[INPUT] Loading target weight dictionary from disk...")
+          model.load_weights("tiny_model/model.safetensors")
+          
+          print("\n[VERIFICATION] Unquantized weight profile (Sample):")
+          flat_unquantized = dict(tree_flatten(model.parameters()))
+          print(f"  -> Sample Layer: 'blocks.0.attn.query_proj.weight' | Shape: {flat_unquantized['blocks.0.attn.query_proj.weight'].shape} | Dtype: {flat_unquantized['blocks.0.attn.query_proj.weight'].dtype}")
+
+          print("\n[ACTION] Applying nn.quantize(model, group_size=32, bits=4)...")
           nn.quantize(model, group_size=32, bits=4)
+
+          print("\n[OUTPUT] Quantized weight profile (Sample):")
+          flat_quantized = dict(tree_flatten(model.parameters()))
+          
+          # Notice how the keys dynamically transformed!
+          q_keys = ["blocks.0.attn.query_proj.weight", "blocks.0.attn.query_proj.scales", "blocks.0.attn.query_proj.biases"]
+          for k in q_keys:
+              if k in flat_quantized:
+                  print(f"  -> Real Key in graph: {k} | Shape: {flat_quantized[k].shape} | Dtype: {flat_quantized[k].dtype}")
 
           os.makedirs("tiny_model_4bit", exist_ok=True)
           model.save_weights("tiny_model_4bit/model.safetensors")
-
-          import shutil
-          shutil.copy("tiny_model/config.json", "tiny_model_4bit/config.json")
-
-          print("4-bit quantization completed successfully using nn.quantize.")
-          print(f"Quantized model saved to tiny_model_4bit/")
+          print("\n[STORAGE] Wrote 4-bit Safetensors dictionary to disk.")
           EOF
           python quantize_tiny.py
 
@@ -170,9 +174,9 @@ jobs:
           import mlx.core as mx
           import mlx.nn as nn
           import os
+          from mlx.utils import tree_flatten
 
-          print("=== MLX Ultra-Tiny Transformer Benchmark ===")
-          print("Loading 4-bit quantized model...")
+          print("\n=== STEP 3: BENCHMARK INITIALIZED ===")
 
           class TinyBlock(nn.Module):
               def __init__(self, d_model=256, n_heads=4):
@@ -208,47 +212,44 @@ jobs:
                   return self.lm_head(x)
 
           model = TinyTransformer()
+          print("[INPUT] Preparing 4-bit skeleton graph...")
           nn.quantize(model, group_size=32, bits=4)
           
+          print("[INPUT] Hydrating graph with baked 4-bit Safetensors...")
           model.load_weights("tiny_model_4bit/model.safetensors")
           mx.eval(model.parameters())
-
-          print("Model loaded successfully.")
 
           max_tokens = 64
           seq_len = 32
           batch_size = 1
 
-          # Warmup
+          # Explicit Input Tracking
           input_ids = mx.random.randint(0, 512, shape=(batch_size, seq_len))
+          print(f"\n[INPUT DATA] Prompt matrix dimension: {input_ids.shape}")
+          print(f"[INPUT DATA] Prompt sample sequence: {input_ids[0, :5].tolist()}...")
+
+          print("[WARMUP] Forcing first token compute to warm up GPU cache...")
           mx.eval(model(input_ids))
-          
-          # Fix for deprecations: Removed mx.metal
           mx.clear_cache()
 
-          # Benchmark
+          print("\n[ACTION] Running 64 token generative loop...")
           start = time.time()
           for i in range(max_tokens):
               logits = model(input_ids)
               next_token = mx.argmax(logits[:, -1, :], axis=-1, keepdims=True)
               input_ids = mx.concatenate([input_ids, next_token], axis=1)
               mx.eval(input_ids)
-
           end = time.time()
+
+          print(f"[OUTPUT DATA] Final generated matrix dimension: {input_ids.shape}")
+          print(f"[OUTPUT DATA] Full sequence result: {input_ids[0, -10:].tolist()} (Last 10 generated tokens)")
 
           elapsed = end - start
           tps = max_tokens / elapsed if elapsed > 0 else 0
-
-          # Fix for deprecations: Removed mx.metal
           peak_mem = mx.get_peak_memory() / (1024 * 1024)
 
-          print(f"\nTokens generated: {max_tokens}")
-          print(f"Generation TPS (4-bit on M1 runner): {tps:.2f}")
-          print(f"Peak memory usage (MB): {peak_mem:.1f}")
-          print(f"Time elapsed: {elapsed:.2f}s")
-
-          print("\nHybrid privacy demo (Proactive DP + selective GL/CKKS on QKV/FFN):")
-          print("Overhead expected <2x on M1-class hardware.")
-          print("This ultra-tiny model (~1.5M+ params) shows practical limits on GitHub M1 runner.")
+          print(f"\n[METRICS] Generation Speed: {tps:.2f} TPS")
+          print(f"[METRICS] Peak memory assigned: {peak_mem:.2f} MB")
+          print(f"[METRICS] Loop compute time: {elapsed:.2f}s")
           EOF
           python benchmark.py
