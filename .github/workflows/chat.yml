@@ -21,6 +21,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install MLX and dependencies
+        run: |
           python -m venv chat_env
           source chat_env/bin/activate
           pip install --upgrade pip
@@ -36,7 +37,7 @@ jobs:
           print("\n=== STARTING 135M CHATBOT INFERENCE ===")
 
           # Using a real, community-quantized 4-bit tiny chatbot model
-          model_path = "mlx-community/SmolLM-135M-Instruct-4bit"
+          model_path = "mlx-community/SmolLM2-135M-Instruct-4bit"
           
           print(f"[ACTION] Loading {model_path} into M1 memory...")
           model, tokenizer = load(model_path)
