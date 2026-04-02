@@ -18,14 +18,18 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Concrete-ML plays best with 3.10 or 3.11
+          python-version: '3.11' # Concrete-ML supports up to 3.12, 3.11 is incredibly stable for it
 
       - name: Install Real FHE Tools
         run: |
           python -m venv fhe_env
           source fhe_env/bin/activate
-          pip install --upgrade pip
-          pip install concrete-ml numpy
+          
+          # CRITICAL: We must upgrade the build tools first on M1 runners!
+          python -m pip install --upgrade pip wheel setuptools
+          
+          # Now we install concrete-ml with its dependencies
+          python -m pip install concrete-ml
 
       - name: Run Real FHE Inference
         run: |
@@ -37,12 +41,12 @@ jobs:
 
           print("\n=== STARTING REAL FHE INFERENCE ===")
 
-          # 1. We mock a simple 2-feature dataset (e.g., text length & positive word count)
-          # In a full app, these would be extracted from a sentence.
+          # 1. We mock a simple 2-feature dataset 
           X = np.random.rand(100, 2)
           y = (X[:, 0] + X[:, 1] > 1).astype(int)
 
           # 2. Train a real model in the clear
+          print("[ACTION] Training model in the clear...")
           model = LogisticRegression(n_bits=8)
           model.fit(X, y)
 
@@ -55,12 +59,14 @@ jobs:
           print(f"[CLIENT] Encrypting data: {test_input}")
           
           # 5. Run real FHE inference
+          print("[ACTION] Executing encrypted inference on the server...")
           start = time.time()
+          
           # This line actually encrypts the data, runs it through the model, and decrypts the result
           fhe_pred = model.predict(test_input, fhe="execute")
           end = time.time()
 
-          print(f"\n[OUTPUT] Decrypted Result: {fhe_pred}")
+          print(f"\n[OUTPUT] Decrypted Prediction Result: {fhe_pred}")
           print(f"[METRICS] Real FHE Execution Time: {end - start:.4f} seconds")
           print("\n=== DEMO COMPLETE ===")
           print("[CONCLUSION] You just performed a real, fully homomorphic calculation on your runner.")
