@@ -87,8 +87,7 @@ jobs:
           mx.eval(model.parameters())
 
           os.makedirs("tiny_model", exist_ok=True)
-          weights = dict(tree_flatten(model.parameters()))
-          mx.save_safetensors("tiny_model/model.safetensors", weights)
+          model.save_weights("tiny_model/model.safetensors") # Use native save_weights
 
           with open("tiny_model/config.json", "w") as f:
               json.dump({
@@ -112,9 +111,7 @@ jobs:
           import mlx.core as mx
           import mlx.nn as nn
           import os
-          from mlx.utils import tree_flatten
 
-          # We need to define the model structure again to load the weights into it
           class TinyBlock(nn.Module):
               def __init__(self, d_model=32, n_heads=2):
                   super().__init__()
@@ -150,15 +147,13 @@ jobs:
 
           print("Loading tiny model for 4-bit quantization...")
           model = TinyTransformer()
-          weights = mx.load("tiny_model/model.safetensors")
-          model.update(weights)
+          model.load_weights("tiny_model/model.safetensors") # Fixed loading method
 
-          # Use MLX's built-in module quantizer to securely target supported weights
+          # Use MLX's built-in module quantizer
           nn.quantize(model, group_size=32, bits=4)
 
           os.makedirs("tiny_model_4bit", exist_ok=True)
-          quantized_weights = dict(tree_flatten(model.parameters()))
-          mx.save_safetensors("tiny_model_4bit/model.safetensors", quantized_weights)
+          model.save_weights("tiny_model_4bit/model.safetensors") # Fixed saving method
 
           # Copy config
           import shutil
@@ -214,12 +209,12 @@ jobs:
                   x = self.norm(x)
                   return self.lm_head(x)
 
-          # Reconstruct the model, quantize it to prepare the dict keys, and then load the quantized weights
+          # Reconstruct the model and quantize it so it expects 4-bit weights
           model = TinyTransformer()
           nn.quantize(model, group_size=32, bits=4)
           
-          weights = mx.load("tiny_model_4bit/model.safetensors")
-          model.update(weights)
+          # Use load_weights instead of update
+          model.load_weights("tiny_model_4bit/model.safetensors")
           mx.eval(model.parameters())
 
           print("Model loaded successfully.")
