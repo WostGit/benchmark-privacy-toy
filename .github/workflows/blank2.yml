@@ -28,16 +28,16 @@ jobs:
           pip install mlx numpy
 
       - name: Run Extreme GPU Stress Test
+        run: |
           source stress_env/bin/activate
           cat > stress_test.py << 'EOF'
           import time
           import mlx.core as mx
-          import mlx.nn as nn
 
           print("\n=== STARTING EXTREME MLX & METAL GPU STRESS TEST ===")
 
           # 1. Scale Up Dimensions Heavily
-          # Simulating processing 2048 tokens at 2048 hidden dimensions
+          # Simulating 2048 tokens at 2048 hidden dimensions
           seq_len = 2048
           d_model = 2048
           layers = 12
@@ -48,7 +48,7 @@ jobs:
           weights = [mx.random.uniform(0, 1, shape=(d_model, d_model)) for _ in range(layers)]
 
           # 2. Pure Compiled GPU Function
-          # @mx.compile fuses all operations and prevents Python loop overhead!
+          # @mx.compile fuses all operations and bypasses Python overhead!
           @mx.compile
           def heavy_transformer_simulation(input_vector, weight_list):
               current_hidden = input_vector
@@ -82,15 +82,15 @@ jobs:
           start = time.time()
           for i in range(100):
               res = heavy_transformer_simulation(x, weights)
-              # Lazy evaluation means we must force execution to measure real speed
+              # Force execution to measure raw execution speed
               mx.eval(res)
               
           end = time.time()
           elapsed = end - start
 
-          # Calculate total FLOPs (Floating Point Operations) pushed
+          # Calculate total FLOPs pushed
           # Matrix mult takes roughly 2 * M * N * K operations
-          ops_per_layer = 2 * (seq_len**3) # attention map mult
+          ops_per_layer = 2 * (seq_len**3) 
           total_ops = ops_per_layer * layers * 100
           tflops = (total_ops / elapsed) / 1e12
 
