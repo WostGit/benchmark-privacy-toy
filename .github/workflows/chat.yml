@@ -1,0 +1,80 @@
+name: 100M+ Parameter Real Chatbot Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  benchmark:
+    runs-on: macos-14
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install MLX and dependencies
+        run: |
+          python -m venv chat_env
+          source chat_env/bin/activate
+          pip install --upgrade pip
+          # We use mlx-lm to easily pull and run real Hugging Face models
+          pip install mlx mlx-lm numpy 
+
+      - name: Run Real Chatbot Generation
+        run: |
+          source chat_env/bin/activate
+          cat > chatbot_test.py << 'EOF'
+          import time
+          from mlx_lm import load, generate
+
+          print("\n=== STARTING 100M+ CHATBOT INFERENCE ===")
+
+          # 1. Pull a real, tiny 135M parameter model from Hugging Face
+          model_path = "mlx-community/SmolLM2-135M-Instruct-4bit"
+          
+          print(f"[ACTION] Loading {model_path} into M1 memory...")
+          model, tokenizer = load(model_path)
+          
+          prompt = "Explain the concept of gravity in one sentence."
+          print(f"[INPUT] Prompt: '{prompt}'")
+
+          # Warmup
+          print("[WARMUP] Forcing first token generate...")
+          generate(model, tokenizer, prompt="Hi", max_tokens=1)
+
+          # 2. Real Generation Test
+          print("\n[ACTION] Generating response...")
+          start = time.time()
+          
+          response = generate(
+              model, 
+              tokenizer, 
+              prompt=prompt, 
+              max_tokens=100,
+              verbose=False # We handle printing manually to measure time strictly
+          )
+          
+          end = time.time()
+          
+          # MLX's generate returns the text. We count words as an estimate, 
+          # but a better way is checking the prompt + generated token count.
+          # Let's count approximate tokens (words) for this basic output.
+          tokens_generated = len(response.split())
+          elapsed = end - start
+          tps = tokens_generated / elapsed if elapsed > 0 else 0
+
+          print(f"\n[OUTPUT] Chatbot Response: {response}")
+          print("\n=== BENCHMARK RESULTS ===")
+          print(f"[METRICS] Time taken: {elapsed:.2f}s")
+          print(f"[METRICS] Approximate Tokens: {tokens_generated}")
+          print(f"[METRICS] Calculated Speed: {tps:.2f} TPS")
+          EOF
+          python chatbot_test.py
