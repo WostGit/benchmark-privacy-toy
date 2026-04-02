@@ -47,7 +47,7 @@ jobs:
           import os
           import mlx.core as mx
           import mlx.nn as nn
-          from mlx.utils import tree_flatten  # Fixed import location
+          from mlx.utils import tree_flatten
 
           class TinyBlock(nn.Module):
               def __init__(self, d_model=32, n_heads=2):
@@ -87,7 +87,7 @@ jobs:
           mx.eval(model.parameters())
 
           os.makedirs("tiny_model", exist_ok=True)
-          weights = dict(tree_flatten(model.parameters())) # Using the fixed imported function
+          weights = dict(tree_flatten(model.parameters()))
           mx.save_safetensors("tiny_model/model.safetensors", weights)
 
           with open("tiny_model/config.json", "w") as f:
@@ -110,32 +110,61 @@ jobs:
           source mlx_env/bin/activate
           cat > quantize_tiny.py << 'EOF'
           import mlx.core as mx
+          import mlx.nn as nn
           import os
-          from mlx.nn import quantize
+          from mlx.utils import tree_flatten
+
+          # We need to define the model structure again to load the weights into it
+          class TinyBlock(nn.Module):
+              def __init__(self, d_model=32, n_heads=2):
+                  super().__init__()
+                  self.attn = nn.MultiHeadAttention(d_model, n_heads, bias=False)
+                  self.ffn = nn.Sequential(
+                      nn.Linear(d_model, 64, bias=False),
+                      nn.GELU(),
+                      nn.Linear(64, d_model, bias=False)
+                  )
+                  self.norm1 = nn.LayerNorm(d_model)
+                  self.norm2 = nn.LayerNorm(d_model)
+
+              def __call__(self, x):
+                  attn_out = self.attn(self.norm1(x), self.norm1(x), self.norm1(x))
+                  x = x + attn_out
+                  x = x + self.ffn(self.norm2(x))
+                  return x
+
+          class TinyTransformer(nn.Module):
+              def __init__(self, vocab_size=512, d_model=32, n_layers=2):
+                  super().__init__()
+                  self.embed = nn.Embedding(vocab_size, d_model)
+                  self.blocks = [TinyBlock(d_model) for _ in range(n_layers)]
+                  self.norm = nn.LayerNorm(d_model)
+                  self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+
+              def __call__(self, x):
+                  x = self.embed(x)
+                  for block in self.blocks:
+                      x = block(x)
+                  x = self.norm(x)
+                  return self.lm_head(x)
 
           print("Loading tiny model for 4-bit quantization...")
+          model = TinyTransformer()
+          weights = mx.load("tiny_model/model.safetensors")
+          model.update(weights)
 
-          # Load the model
-          model_path = "tiny_model"
-          weights = mx.load(model_path + "/model.safetensors")
-
-          # Simple way: load parameters and quantize quantizable layers
-          quantized_weights = {}
-          for k, v in weights.items():
-              if any(x in k for x in ["weight", "embed", "linear"]):
-                  quantized = mx.quantize(v, group_size=32, bits=4)
-                  quantized_weights[k] = quantized
-              else:
-                  quantized_weights[k] = v
+          # Use MLX's built-in module quantizer to securely target supported weights
+          nn.quantize(model, group_size=32, bits=4)
 
           os.makedirs("tiny_model_4bit", exist_ok=True)
+          quantized_weights = dict(tree_flatten(model.parameters()))
           mx.save_safetensors("tiny_model_4bit/model.safetensors", quantized_weights)
 
           # Copy config
           import shutil
           shutil.copy("tiny_model/config.json", "tiny_model_4bit/config.json")
 
-          print("4-bit quantization completed successfully (manual method).")
+          print("4-bit quantization completed successfully using nn.quantize.")
           print(f"Quantized model saved to tiny_model_4bit/")
           EOF
           python quantize_tiny.py
@@ -185,8 +214,10 @@ jobs:
                   x = self.norm(x)
                   return self.lm_head(x)
 
-          # Load quantized weights
+          # Reconstruct the model, quantize it to prepare the dict keys, and then load the quantized weights
           model = TinyTransformer()
+          nn.quantize(model, group_size=32, bits=4)
+          
           weights = mx.load("tiny_model_4bit/model.safetensors")
           model.update(weights)
           mx.eval(model.parameters())
