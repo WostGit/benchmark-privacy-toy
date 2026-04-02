@@ -28,9 +28,9 @@ jobs:
             ~/mlx_env
             ./tiny_model
             ./tiny_model_4bit
-          key: mlx-m1-toy-privacy-v4-${{ hashFiles('requirements.txt', 'create_tiny_model.py', 'benchmark.py') }}
+          key: mlx-m1-toy-privacy-v5-${{ hashFiles('requirements.txt', 'create_tiny_model.py', 'benchmark.py') }}
           restore-keys: |
-            mlx-m1-toy-privacy-v4-
+            mlx-m1-toy-privacy-v5-
 
       - name: Install MLX and dependencies
         run: |
@@ -221,12 +221,12 @@ jobs:
               logits = model(input_ids)
               logits = logits[:, -1, :] / temperature  # Extract last token & apply temp
               
-              # Enforce Top-K diversity
-              v, _ = mx.topk(logits, top_k, axis=-1)
+              # FIXED: MLX topk only returns values.
+              # We slice the array at the target k index to act as our threshold boundary
+              v = mx.topk(logits, top_k, axis=-1)
               min_v = v[:, -1:]
               logits = mx.where(logits < min_v, -float("inf"), logits)
               
-              # Sample from distribution instead of argmax
               probs = mx.softmax(logits, axis=-1)
               next_token = mx.random.categorical(mx.log(probs), axis=-1)
               next_token = mx.expand_dims(next_token, 1)
