@@ -72,7 +72,7 @@ jobs:
           print(f"[ACTION] Loading {model_id}...")
           model, tokenizer = load(model_id)
 
-          # Hardcode the conversation loop to simulate a continuous chat
+          # Conversation history to keep track of the chat
           conversation_history = [
               {"role": "system", "content": "You are a helpful and witty chatbot operating over a secure FHE channel."}
           ]
