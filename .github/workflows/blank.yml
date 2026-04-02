@@ -28,9 +28,9 @@ jobs:
             ~/mlx_env
             ./tiny_model
             ./tiny_model_4bit
-          key: mlx-m1-toy-privacy-v3-${{ hashFiles('requirements.txt', 'create_tiny_model.py', 'benchmark.py') }}
+          key: mlx-m1-toy-privacy-v4-${{ hashFiles('requirements.txt', 'create_tiny_model.py', 'benchmark.py') }}
           restore-keys: |
-            mlx-m1-toy-privacy-v3-
+            mlx-m1-toy-privacy-v4-
 
       - name: Install MLX and dependencies
         run: |
@@ -89,23 +89,19 @@ jobs:
 
           print("\n[INPUT/OUTPUT] Analyzing Generated Weights In-Memory:")
           weights_dict = dict(tree_flatten(model.parameters()))
-          for k, v in list(weights_dict.items())[:5]: # Truncated for readability
+          for k, v in list(weights_dict.items())[:5]:
               print(f"  -> Key: {k} | Shape: {v.shape} | Dtype: {v.dtype}")
-          print(f"  -> ... total parameters logged: {len(weights_dict)} dictionary keys.")
 
           total_params = sum(p.size for _, p in tree_flatten(model.parameters()))
           print(f"\n[METRICS] Total loaded parameters: {total_params / 1e6:.4f}M")
 
           os.makedirs("tiny_model", exist_ok=True)
           model.save_weights("tiny_model/model.safetensors")
-          print("[STORAGE] Successfully saved native weights to 'tiny_model/model.safetensors'")
 
           with open("tiny_model/config.json", "w") as f:
-              config = {
+              json.dump({
                   "vocab_size": 512, "d_model": 256, "n_layers": 4, "n_heads": 4, "model_type": "tiny_transformer"
-              }
-              json.dump(config, f, indent=2)
-              print(f"[STORAGE] Wrote model config.json: {config}")
+              }, f, indent=2)
           EOF
           python create_tiny_model.py
 
@@ -141,32 +137,20 @@ jobs:
                   self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
 
           model = TinyTransformer()
-          print("[INPUT] Loading target weight dictionary from disk...")
           model.load_weights("tiny_model/model.safetensors")
-          
-          print("\n[VERIFICATION] Unquantized weight profile (Sample):")
-          flat_unquantized = dict(tree_flatten(model.parameters()))
-          print(f"  -> Sample Layer: 'blocks.0.attn.query_proj.weight' | Shape: {flat_unquantized['blocks.0.attn.query_proj.weight'].shape} | Dtype: {flat_unquantized['blocks.0.attn.query_proj.weight'].dtype}")
 
-          print("\n[ACTION] Applying nn.quantize(model, group_size=32, bits=4)...")
           nn.quantize(model, group_size=32, bits=4)
-
-          print("\n[OUTPUT] Quantized weight profile (Sample):")
-          flat_quantized = dict(tree_flatten(model.parameters()))
-          
-          # Notice how the keys dynamically transformed!
-          q_keys = ["blocks.0.attn.query_proj.weight", "blocks.0.attn.query_proj.scales", "blocks.0.attn.query_proj.biases"]
-          for k in q_keys:
-              if k in flat_quantized:
-                  print(f"  -> Real Key in graph: {k} | Shape: {flat_quantized[k].shape} | Dtype: {flat_quantized[k].dtype}")
 
           os.makedirs("tiny_model_4bit", exist_ok=True)
           model.save_weights("tiny_model_4bit/model.safetensors")
+
+          import shutil
+          shutil.copy("tiny_model/config.json", "tiny_model_4bit/config.json")
           print("\n[STORAGE] Wrote 4-bit Safetensors dictionary to disk.")
           EOF
           python quantize_tiny.py
 
-      - name: Run TPS benchmark with hybrid privacy stub
+      - name: Run TPS benchmark with top-k sampling & temperature
         run: |
           source mlx_env/bin/activate
           cat > benchmark.py << 'EOF'
@@ -174,9 +158,8 @@ jobs:
           import mlx.core as mx
           import mlx.nn as nn
           import os
-          from mlx.utils import tree_flatten
 
-          print("\n=== STEP 3: BENCHMARK INITIALIZED ===")
+          print("\n=== STEP 3: BENCHMARK INITIALIZED (WITH SAMPLING) ===")
 
           class TinyBlock(nn.Module):
               def __init__(self, d_model=256, n_heads=4):
@@ -212,37 +195,48 @@ jobs:
                   return self.lm_head(x)
 
           model = TinyTransformer()
-          print("[INPUT] Preparing 4-bit skeleton graph...")
           nn.quantize(model, group_size=32, bits=4)
-          
-          print("[INPUT] Hydrating graph with baked 4-bit Safetensors...")
           model.load_weights("tiny_model_4bit/model.safetensors")
           mx.eval(model.parameters())
 
           max_tokens = 64
           seq_len = 32
           batch_size = 1
+          
+          # Rigorous Sampling Hyperparameters
+          temperature = 0.8
+          top_k = 10
 
-          # Explicit Input Tracking
           input_ids = mx.random.randint(0, 512, shape=(batch_size, seq_len))
-          print(f"\n[INPUT DATA] Prompt matrix dimension: {input_ids.shape}")
-          print(f"[INPUT DATA] Prompt sample sequence: {input_ids[0, :5].tolist()}...")
+          print(f"\n[INPUT DATA] Prompt sample sequence: {input_ids[0, :5].tolist()}...")
 
           print("[WARMUP] Forcing first token compute to warm up GPU cache...")
           mx.eval(model(input_ids))
           mx.clear_cache()
 
-          print("\n[ACTION] Running 64 token generative loop...")
+          print(f"\n[ACTION] Running loop with Temperature={temperature} and Top-K={top_k}...")
           start = time.time()
+          
           for i in range(max_tokens):
               logits = model(input_ids)
-              next_token = mx.argmax(logits[:, -1, :], axis=-1, keepdims=True)
+              logits = logits[:, -1, :] / temperature  # Extract last token & apply temp
+              
+              # Enforce Top-K diversity
+              v, _ = mx.topk(logits, top_k, axis=-1)
+              min_v = v[:, -1:]
+              logits = mx.where(logits < min_v, -float("inf"), logits)
+              
+              # Sample from distribution instead of argmax
+              probs = mx.softmax(logits, axis=-1)
+              next_token = mx.random.categorical(mx.log(probs), axis=-1)
+              next_token = mx.expand_dims(next_token, 1)
+
               input_ids = mx.concatenate([input_ids, next_token], axis=1)
               mx.eval(input_ids)
+              
           end = time.time()
 
-          print(f"[OUTPUT DATA] Final generated matrix dimension: {input_ids.shape}")
-          print(f"[OUTPUT DATA] Full sequence result: {input_ids[0, -10:].tolist()} (Last 10 generated tokens)")
+          print(f"[OUTPUT DATA] Full sequence result: {input_ids[0, -10:].tolist()} (Diversity unlocked!)")
 
           elapsed = end - start
           tps = max_tokens / elapsed if elapsed > 0 else 0
