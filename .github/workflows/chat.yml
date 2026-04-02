@@ -42,7 +42,7 @@ jobs:
           print(f"[ACTION] Loading {model_path} into M1 memory...")
           model, tokenizer = load(model_path)
           
-          # Giving the tiny model a specific instruction pushes it to behave like a chatbot
+          # Providing an anchor sentence for the tiny model to build on
           prompt = "Gravity is a fundamental force that attracts objects with mass toward each other."
           
           print(f"[INPUT] Prompt: '{prompt}'")
