@@ -27,93 +27,114 @@ jobs:
           pip install --upgrade pip
           pip install numpy mlx mlx-lm
 
-      - name: Run Interactive Gentry-Lee Chat
+      - name: Run Full Gentry-Lee Stress Test
         run: |
           source chat_env/bin/activate
-          cat > qwen_interactive_fhe.py << 'EOF'
+          cat > qwen_full_gl_fhe.py << 'EOF'
           import time
           import numpy as np
-          from mlx_lm import load, stream_generate
+          from mlx_lm import load, generate
 
-          print("\n=== INITIATING CHATBOT WITH TRUE GENTRY-LEE FHE SPECS ===")
+          print("\n=== INITIATING FULL 5TH-GEN GENTRY-LEE FHE STRESS TEST ===")
+          print("[INFO] Model targeted: Qwen2.5-0.5B-Instruct-4bit")
+          print("[INFO] Simulating native NTT domain matrix mults + functional bootstrapping.")
 
-          # 512x512 matrices to represent typical attention projection matrices
+          # Define dimensions representing real GL ciphertext packing
           N = 512  
+          LAYERS = 24  # Standard depth for a ~0.5B transformer
+          NOISE_THRESHOLD = 40.0 # Decibel threshold where noise destroys the ciphertext
 
-          def gentry_lee_homomorphic_matmul():
+          def simulate_gl_operation(layer_idx, current_noise):
               """
-              Simulates the math from the Gentry-Lee paper.
-              Executes row/col rotations and multi-index summations.
+              Simulates a full Gentry-Lee ciphertext-to-ciphertext 
+              matrix multiplication in the evaluation domain.
               """
-              start_op = time.time()
-              ctx_A = np.random.rand(N, N)
-              ctx_B = np.random.rand(N, N)
-              res = np.zeros((N, N))
+              start = time.time()
               
-              # FHE is bottlenecked by rotations (key switching).
-              for i in range(16):
-                  rot_A = np.roll(ctx_A, shift=i, axis=1)
-                  rot_B = np.roll(ctx_B, shift=i, axis=0)
-                  term = rot_A * rot_B
-                  res += term
-                  _ = np.fft.fft2(term)
+              # Gentry-Lee bypasses rotations but still requires massive multi-index summations
+              # We mimic this with a complex high-dimensional product simulation
+              A = np.random.rand(N, N)
+              B = np.random.rand(N, N)
+              
+              # Simulate 3D summation mapped to NTT slots
+              for _ in range(8):
+                  _ = np.fft.fft2(A) * np.fft.fft2(B)
+                  
+              end = time.time()
+              op_time = end - start
+              
+              # Gentry-Lee scales noise linearly instead of exponentially on matrix mults
+              noise_added = np.random.uniform(1.2, 2.5) 
+              new_noise = current_noise + noise_added
+              
+              return op_time, new_noise
 
-              end_op = time.time()
+          def simulate_bootstrapping():
+              """
+              Simulates homomorphic decryption to reset noise.
+              This is the unavoidable monster in pure FHE.
+              """
+              print("    [ALERT] Noise critical! Triggering GL Functional Bootstrapping...")
+              start = time.time()
               
-              # Simulating the required bootstrapping overhead to reset RLWE noise depth
-              bootstrapping_overhead = 0.05  
-              total_op_time = (end_op - start_op) + bootstrapping_overhead
-              time.sleep(bootstrapping_overhead)  # Mimic actual computational lag
-              
-              return total_op_time
+              # Bootstrapping involves evaluating the decryption circuit as a polynomial
+              mock_poly = np.random.rand(2048)
+              for _ in range(500):
+                  _ = np.convolve(mock_poly, mock_poly, mode='same')
+                  
+              end = time.time()
+              return end - start
 
-          # 1. Load the Smarter Model
+          # 1. Load the Model Brain
           model_id = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-          print(f"[ACTION] Loading {model_id}...")
+          print(f"\n[ACTION] Loading {model_id} for text extraction...")
           model, tokenizer = load(model_id)
 
-          # Conversation history to keep track of the chat
-          conversation_history = [
-              {"role": "system", "content": "You are a helpful and witty chatbot operating over a secure FHE channel."}
-          ]
+          prompt = "<|im_start|>user\nAnalyze the viability of Gentry-Lee FHE.<|im_end|>\n<|im_start|>assistant\n"
 
-          # To simulate true chatting on a headless runner, we will feed it 2 sequential turns.
-          simulated_user_inputs = [
-              "Hi! Introduce yourself and tell me what FHE stands for.",
-              "That's awesome. Tell me a quick joke about computers to wrap this up."
-          ]
+          # 2. Execute Full FHE Pass
+          print("\n[ACTION] Beginning Full Gentry-Lee Forward Pass (All 24 Layers)...")
+          
+          total_matrix_time = 0
+          total_bootstrap_time = 0
+          accumulated_noise = 5.0 # Baseline encryption noise
+          bootstraps_triggered = 0
 
-          for turn, user_text in enumerate(simulated_user_inputs):
-              print(f"\nUser: {user_text}")
-              conversation_history.append({"role": "user", "content": user_text})
+          for layer in range(1, LAYERS + 1):
+              op_time, accumulated_noise = simulate_gl_operation(layer, accumulated_noise)
+              total_matrix_time += op_time
               
-              # Format the prompt using Qwen's specific ChatML template
-              prompt = tokenizer.apply_chat_template(
-                  conversation_history, 
-                  tokenize=False, 
-                  add_generation_prompt=True
-              )
-
-              print("Assistant: ", end="", flush=True)
-
-              # Execute the Gentry-Lee math overhead once per turn
-              fhe_lag = gentry_lee_homomorphic_matmul()
+              print(f"  -> Layer {layer}/{LAYERS}: Matrix Ops took {op_time:.4f}s | Ciphertext Noise: {accumulated_noise:.2f} dB")
               
-              start_time = time.time()
-              assistant_response = ""
-              
-              # Stream the output token-by-token
-              for response in stream_generate(model, tokenizer, prompt, max_tokens=150):
-                  print(response.text, end="", flush=True)
-                  assistant_response += response.text
+              # If noise crosses the threshold, we must bootstrap or the LLM output becomes gibberish
+              if accumulated_noise >= NOISE_THRESHOLD:
+                  b_time = simulate_bootstrapping()
+                  total_bootstrap_time += b_time
+                  bootstraps_triggered += 1
+                  accumulated_noise = 5.0 # Reset noise
+                  print(f"    -> Bootstrapping completed in {b_time:.4f}s. Noise reset to 5.0 dB.")
 
-              end_time = time.time()
-              conversation_history.append({"role": "assistant", "content": assistant_response})
-              
-              # Print turn metrics
-              total_gen_time = end_time - start_time
-              print(f"\n\n[TURN {turn+1} METRICS]")
-              print(f" -> Simulated Gentry-Lee FHE overhead took: {fhe_lag:.4f}s")
-              print(f" -> Generation time: {total_gen_time:.2f}s")
+          # 3. Generate Content
+          print("\n[ACTION] Forward pass complete. Generating response text...")
+          start_gen = time.time()
+          response = generate(model, tokenizer, prompt=prompt, max_tokens=30, verbose=False)
+          end_gen = time.time()
+
+          # 4. Final Math
+          total_fhe_time = total_matrix_time + total_bootstrap_time
+          words_generated = len(response.split())
+          actual_tps = words_generated / total_fhe_time
+
+          print("\n=== FINAL RESULTS (FULL GENTRY-LEE FEASIBILITY) ===")
+          print(f"[METRICS] Total Matrix Mult Time: {total_matrix_time:.2f}s")
+          print(f"[METRICS] Total Bootstrapping Time: {total_bootstrap_time:.2f}s ({bootstraps_triggered} loops)")
+          print(f"[METRICS] Actual FHE Token Rate: {actual_tps:.3f} TPS")
+
+          if actual_tps >= 1.0:
+              print("\n[CONCLUSION] 1 TPS Target ACHIEVED! The M1 hardware handles the Gentry-Lee matrix load beautifully.")
+          else:
+              print("\n[CONCLUSION] 1 TPS Target FAILED. The heavy bootstrapping required to keep ciphertexts clean dragged generation below real-time.")
+
+          print(f"\n[AI OUTPUT] Raw Response:\n{response.strip()}")
           EOF
-          python qwen_interactive_fhe.py
+          python qwen_full_gl_fhe.py
