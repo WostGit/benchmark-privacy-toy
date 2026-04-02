@@ -1,0 +1,102 @@
+name: Extreme MLX M1 Stress Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  benchmark:
+    runs-on: macos-14
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install MLX and dependencies
+        run: |
+          python -m venv stress_env
+          source stress_env/bin/activate
+          pip install --upgrade pip
+          pip install mlx numpy
+
+      - name: Run Extreme GPU Stress Test
+          source stress_env/bin/activate
+          cat > stress_test.py << 'EOF'
+          import time
+          import mlx.core as mx
+          import mlx.nn as nn
+
+          print("\n=== STARTING EXTREME MLX & METAL GPU STRESS TEST ===")
+
+          # 1. Scale Up Dimensions Heavily
+          # Simulating processing 2048 tokens at 2048 hidden dimensions
+          seq_len = 2048
+          d_model = 2048
+          layers = 12
+
+          # Generate large mock matrices
+          x = mx.random.uniform(0, 1, shape=(1, seq_len, d_model))
+          # Simulating 12 layers of weights
+          weights = [mx.random.uniform(0, 1, shape=(d_model, d_model)) for _ in range(layers)]
+
+          # 2. Pure Compiled GPU Function
+          # @mx.compile fuses all operations and prevents Python loop overhead!
+          @mx.compile
+          def heavy_transformer_simulation(input_vector, weight_list):
+              current_hidden = input_vector
+              
+              for w in weight_list:
+                  # Simulate QKV projection
+                  proj = mx.matmul(current_hidden, w)
+                  
+                  # Simulate Attention Softmax
+                  attn_scores = mx.matmul(proj, proj.swapaxes(-1, -2))
+                  attn_probs = mx.softmax(attn_scores, axis=-1)
+                  
+                  # Simulate FFN & Residual Connection
+                  current_hidden = current_hidden + mx.matmul(attn_probs, proj)
+                  
+              return current_hidden
+
+          # Warmup (Compiles the Metal shader)
+          print("[WARMUP] Compiling operations into fused GPU Metal shaders...")
+          warmup_start = time.time()
+          res = heavy_transformer_simulation(x, weights)
+          mx.eval(res)
+          print(f"[WARMUP] Compilation complete in {time.time() - warmup_start:.2f}s")
+
+          # The Real Stress Test
+          print("\n[ACTION] Flooding the M1 GPU with 100 iterations of heavy compute...")
+          
+          # Force a cache clear
+          mx.clear_cache()
+          
+          start = time.time()
+          for i in range(100):
+              res = heavy_transformer_simulation(x, weights)
+              # Lazy evaluation means we must force execution to measure real speed
+              mx.eval(res)
+              
+          end = time.time()
+          elapsed = end - start
+
+          # Calculate total FLOPs (Floating Point Operations) pushed
+          # Matrix mult takes roughly 2 * M * N * K operations
+          ops_per_layer = 2 * (seq_len**3) # attention map mult
+          total_ops = ops_per_layer * layers * 100
+          tflops = (total_ops / elapsed) / 1e12
+
+          print("\n=== STRESS TEST RESULTS ===")
+          print(f"[METRICS] Total computation time: {elapsed:.4f}s")
+          print(f"[METRICS] Estimated GPU Compute speed: {tflops:.2f} TFLOPS")
+          print(f"[METRICS] Peak Memory Allocated: {mx.get_peak_memory() / (1024*1024):.2f} MB")
+          EOF
+          python stress_test.py
