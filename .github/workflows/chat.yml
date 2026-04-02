@@ -1,4 +1,4 @@
-name: Real Chatbot Benchmark (135M Model)
+name: Chatbot Under Simulated FHE Operations
 
 on:
   push:
@@ -27,53 +27,72 @@ jobs:
           pip install --upgrade pip
           pip install mlx mlx-lm numpy 
 
-      - name: Run Real Chatbot Generation
+      - name: Run Simulated FHE Chatbot
         run: |
           source chat_env/bin/activate
-          cat > chatbot_test.py << 'EOF'
+          cat > fhe_simulation.py << 'EOF'
           import time
           from mlx_lm import load, generate
+          import mlx.core as mx
 
-          print("\n=== STARTING 135M CHATBOT INFERENCE ===")
+          print("\n=== INITIATING CHATBOT WITH SIMULATED FHE OPERATIONS ===")
 
-          # Using the guaranteed public repository for SmolLM v1
           model_path = "mlx-community/SmolLM-135M-Instruct-4bit"
-          
           print(f"[ACTION] Loading {model_path} into M1 memory...")
           model, tokenizer = load(model_path)
           
-          # Providing an anchor sentence for the tiny model to build on
           prompt = "Gravity is a fundamental force that attracts objects with mass toward each other."
-          
           print(f"[INPUT] Prompt: '{prompt}'")
 
-          # Warmup
-          print("[WARMUP] Forcing first token generate...")
+          # 1. Warmup
           generate(model, tokenizer, prompt="Hi", max_tokens=1)
 
-          # Real Generation Test
-          print("\n[ACTION] Generating response...")
+          # 2. Simulate the Gentry-Lee Overhead
+          # In FHE, every token generation requires a heavy bootstrapping operation. 
+          # We will force the GPU to process thousands of dummy matrix operations 
+          # to mimic this overhead for every single word generated.
+          
+          def simulate_bootstrapping():
+              # Simulating the polynomial calculations required to reset noise
+              A = mx.random.normal(shape=(512, 512))
+              B = mx.random.normal(shape=(512, 512))
+              for _ in range(5): # Simulating the repetitive depth of noise removal
+                  C = mx.matmul(A, B)
+              mx.eval(C) # Force the GPU to actually compute it
+
+          print("\n[ACTION] Generating response under simulated FHE conditions...")
           start = time.time()
           
-          response = generate(
-              model, 
-              tokenizer, 
-              prompt=prompt, 
-              max_tokens=100,
-              verbose=False
-          )
+          # We generate a shorter context because FHE would make 100 tokens take forever
+          max_simulated_tokens = 15 
+          response = ""
           
+          # Simulating the sequence generation loop with FHE penalties
+          for i in range(max_simulated_tokens):
+              # 1. Simulate the heavy ciphertext operation before predicting the next token
+              simulate_bootstrapping() 
+              
+              # 2. Generate a single token
+              token_response = generate(
+                  model, 
+                  tokenizer, 
+                  prompt=prompt + response, 
+                  max_tokens=1,
+                  verbose=False
+              )
+              response += " " + token_response
+              
           end = time.time()
           
-          # Estimate tokens based on words generated
           tokens_generated = len(response.split())
           elapsed = end - start
           tps = tokens_generated / elapsed if elapsed > 0 else 0
 
-          print(f"\n[OUTPUT] Chatbot Response:\n{response}")
+          print(f"\n[OUTPUT] FHE-Simulated Chatbot Response:\n{response.strip()}")
           print("\n=== BENCHMARK RESULTS ===")
           print(f"[METRICS] Time taken: {elapsed:.2f}s")
-          print(f"[METRICS] Approximate Generated Tokens: {tokens_generated}")
+          print(f"[METRICS] Tokens Generated: {tokens_generated}")
           print(f"[METRICS] Calculated Speed: {tps:.2f} TPS")
+          print(f"[RATIO] Speed loss vs unencrypted: {((164.80 - tps) / 164.80 * 100):.2f}% slower")
           EOF
-          python chatbot_test.py
+          python fhe_simulation.py
